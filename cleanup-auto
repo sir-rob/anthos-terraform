@@ -1,0 +1,13 @@
+rm acm.tf
+rm -rf asm-dir-primary
+rm -rf asm-dir-secondary
+rm asm.tf
+rm clusters.tf
+rm apis.tf
+rm config-management-operator.yaml
+rm hub.tf
+rm main.tf
+rm terraform.tfstate
+rm terraform.tfvars
+rm terraform.tfstate.backup
+rm variables.tf

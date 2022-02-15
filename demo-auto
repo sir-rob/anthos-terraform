@@ -1,0 +1,314 @@
+echo "*** ***"
+echo "*** Setting up variables ***"
+echo "*** ***"
+
+export WORK_DIR=$PWD
+export PATH=$PATH:$WORK_DIR/bin:
+export PROJECT_ID=$(gcloud config get-value project)
+gcloud config set core/project $PROJECT_ID
+
+echo "*** ***"
+echo "*** Updating Binaries in Cloud Shell ***"
+echo "*** ***"
+
+TERRAFORM_VERSION=0.14.5
+wget -q https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip 
+unzip terraform_${TERRAFORM_VERSION}_linux_amd64.zip
+chmod +x terraform 
+sudo mv -f terraform /usr/local/bin 
+rm -rf terraform_${TERRAFORM_VERSION}_linux_amd64.zip
+
+curl -o kpt "https://storage.googleapis.com/kpt-dev/latest/linux_amd64/kpt"
+chmod +x kpt
+mv ./kpt $WORK_DIR/bin
+
+curl -o install_kustomize.sh "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" 
+chmod +x install_kustomize.sh && ./install_kustomize.sh
+mv ./kustomize $WORK_DIR/bin
+
+echo "*** ***"
+echo "*** Creating base Terraform resources ***"
+echo "*** ***"
+
+cat << EOF > variables.tf
+variable "project_id" {
+  description = "The project ID to host the cluster in"
+}
+
+variable "primary_region" {
+  description = "The primary region to be used"
+}
+variable "primary_zones" {
+  description = "The primary zones to be used"
+}
+
+variable "secondary_region" {
+  description = "The secondary region to be used"
+}
+variable "secondary_zones" {
+  description = "The secondary zones to be used"
+}
+EOF
+
+cat << EOF > terraform.tfvars
+primary_region      = "us-central1"
+primary_zones      = ["us-central1-a"]
+secondary_region      = "us-west1"
+secondary_zones      = ["us-west1-b"]
+EOF
+
+cat << EOF > main.tf
+provider "google" {
+  project = var.project_id
+  region  = var.primary_region
+}
+
+data "google_client_config" "current" {}
+
+data "google_project" "project" {
+  project_id = var.project_id
+}
+
+output "project" {
+  value = data.google_client_config.current.project
+}
+EOF
+
+cat << EOF > apis.tf
+module "project-services" {
+  source  = "terraform-google-modules/project-factory/google//modules/project_services"
+
+  project_id  = data.google_client_config.current.project
+  disable_services_on_destroy = false
+  activate_apis = [
+    "compute.googleapis.com",
+    "iam.googleapis.com",
+    "container.googleapis.com",
+    "cloudresourcemanager.googleapis.com",
+    "anthos.googleapis.com",
+    "cloudtrace.googleapis.com",
+    "meshca.googleapis.com",
+    "meshtelemetry.googleapis.com",
+    "meshconfig.googleapis.com",
+    "iamcredentials.googleapis.com",
+    "gkeconnect.googleapis.com",
+    "gkehub.googleapis.com",
+    "monitoring.googleapis.com",
+    "logging.googleapis.com"
+
+  ]
+}
+EOF
+
+terraform init
+terraform plan -var project_id=${PROJECT_ID}
+terraform apply -var project_id=${PROJECT_ID} -auto-approve
+
+echo "*** ***"
+echo "*** Creating your GKE Clusters ***"
+echo "*** ***"
+
+cat << EOF > clusters.tf
+
+# Primary Cluster
+module "primary-cluster" {
+  name                    = "primary"
+  project_id              = module.project-services.project_id
+  source                  = "terraform-google-modules/kubernetes-engine/google//modules/beta-public-cluster"
+  version                 = "13.0.0"
+  regional                = false
+  region                  = var.primary_region
+  network                 = "default"
+  subnetwork              = "default"
+  ip_range_pods           = ""
+  ip_range_services       = ""
+  zones                   = var.primary_zones
+  release_channel         = "REGULAR"
+  cluster_resource_labels = { "mesh_id" : "proj-\${data.google_project.project.number}" }
+  node_pools = [
+    {
+      name         = "default-node-pool"
+      autoscaling  = false
+      auto_upgrade = true
+
+      node_count   = 5
+      machine_type = "e2-standard-4"
+    },
+  ]
+
+}
+
+# Secondary Cluster
+module "secondary-cluster" {
+  name                    = "secondary"
+  project_id              = module.project-services.project_id
+  source                  = "terraform-google-modules/kubernetes-engine/google//modules/beta-public-cluster"
+  version                 = "13.0.0"
+  regional                = false
+  region                  = var.secondary_region
+  network                 = "default"
+  subnetwork              = "default"
+  ip_range_pods           = ""
+  ip_range_services       = ""
+  zones                   = var.secondary_zones
+  release_channel         = "REGULAR"
+  cluster_resource_labels = { "mesh_id" : "proj-\${data.google_project.project.number}" }
+
+  node_pools = [
+    {
+      name         = "default-node-pool"
+      autoscaling  = false
+      auto_upgrade = true
+
+      node_count   = 5
+      machine_type = "e2-standard-4"
+    },
+  ]
+
+}
+EOF
+
+terraform init
+terraform plan -var project_id=${PROJECT_ID}
+terraform apply -var project_id=${PROJECT_ID} -auto-approve
+
+echo "*** ***"
+echo "*** Registering GKE Clusters with Anthos ***"
+echo "*** ***"
+
+cat << EOF > hub.tf
+
+module "hub-primary" {
+  source           = "terraform-google-modules/kubernetes-engine/google//modules/hub"
+
+  project_id       = data.google_client_config.current.project
+  cluster_name     = module.primary-cluster.name
+  location         = module.primary-cluster.location
+  cluster_endpoint = module.primary-cluster.endpoint
+  gke_hub_membership_name = "primary"
+  gke_hub_sa_name = "primary"
+}
+
+module "hub-secondary" {
+  source           = "terraform-google-modules/kubernetes-engine/google//modules/hub"
+
+  project_id       = data.google_client_config.current.project
+  cluster_name     = module.secondary-cluster.name
+  location         = module.secondary-cluster.location
+  cluster_endpoint = module.secondary-cluster.endpoint
+  gke_hub_membership_name = "secondary"
+  gke_hub_sa_name = "secondary"
+}
+EOF
+
+terraform init
+terraform plan -var project_id=${PROJECT_ID}
+terraform apply -var project_id=${PROJECT_ID} -auto-approve
+
+echo "*** ***"
+echo "*** Enabling Anthos Service Mesh ***"
+echo "*** ***"
+
+cat << EOF > asm.tf
+
+module "asm-primary" {
+  source           = "terraform-google-modules/kubernetes-engine/google//modules/asm"
+  version          = "13.0.0"
+  project_id       = data.google_client_config.current.project
+  cluster_name     = module.primary-cluster.name
+  location         = module.primary-cluster.location
+  cluster_endpoint = module.primary-cluster.endpoint
+
+  asm_dir          = "asm-dir-\${module.primary-cluster.name}"
+
+}
+
+module "asm-secondary" {
+  source           = "terraform-google-modules/kubernetes-engine/google//modules/asm"
+  version          = "13.0.0"
+  project_id       = data.google_client_config.current.project
+  cluster_name     = module.secondary-cluster.name
+  location         = module.secondary-cluster.location
+  cluster_endpoint = module.secondary-cluster.endpoint
+
+  asm_dir = "asm-dir-\${module.secondary-cluster.name}"
+
+}
+
+EOF
+
+terraform init
+terraform plan -var project_id=${PROJECT_ID}
+terraform apply -var project_id=${PROJECT_ID} -auto-approve
+
+echo "*** ***"
+echo "*** Enabling Config Management (GitOps) ***"
+echo "*** ***"
+
+gsutil cp gs://config-management-release/released/latest/config-management-operator.yaml config-management-operator.yaml
+
+cat << EOF >> variables.tf
+
+variable "acm_repo_location" {
+  description = "The location of the git repo ACM will sync to"
+}
+variable "acm_branch" {
+  description = "The git branch ACM will sync to"
+}
+variable "acm_dir" {
+  description = "The directory in git ACM will sync to"
+}
+EOF
+
+cat << EOF >> terraform.tfvars
+
+acm_repo_location   = "https://github.com/GoogleCloudPlatform/csp-config-management/"
+acm_branch          = "1.0.0"
+acm_dir             = "foo-corp"
+EOF
+
+cat << EOF > acm.tf
+
+module "acm-primary" {
+  source           = "github.com/terraform-google-modules/terraform-google-kubernetes-engine//modules/acm"
+
+  project_id       = data.google_client_config.current.project
+  cluster_name     = module.primary-cluster.name
+  location         = module.primary-cluster.location
+  cluster_endpoint = module.primary-cluster.endpoint
+
+  operator_path    = "config-management-operator.yaml"
+  sync_repo        = var.acm_repo_location
+  sync_branch      = var.acm_branch
+  policy_dir       = var.acm_dir
+}
+
+module "acm-secondary" {
+  source           = "github.com/terraform-google-modules/terraform-google-kubernetes-engine//modules/acm"
+
+  project_id       = data.google_client_config.current.project
+  cluster_name     = module.secondary-cluster.name
+  location         = module.secondary-cluster.location
+  cluster_endpoint = module.secondary-cluster.endpoint
+
+  operator_path    = "config-management-operator.yaml"
+  sync_repo        = var.acm_repo_location
+  sync_branch      = var.acm_branch
+  policy_dir       = var.acm_dir
+}
+EOF
+
+terraform init
+terraform plan -var project_id=${PROJECT_ID}
+terraform apply -var project_id=${PROJECT_ID} -auto-approve
+
+echo "*** ***"
+echo "*** Get Primary Cluster's credentials ***"
+
+gcloud container clusters get-credentials primary --zone us-central1-a
+
+echo "*** ***"
+echo "*** Watch namespaces getting created ***"
+echo "*** ***"
+
+watch kubectl get ns -l app.kubernetes.io/managed-by=configmanagement.gke.io

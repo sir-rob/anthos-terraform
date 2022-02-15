@@ -1,0 +1,623 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  annotations:
+    gke.io/cluster: gke://sm-demo-forteam/us-west1-b/secondary
+  labels:
+    control-plane: controller-manager
+  name: asm-system
+---
+apiVersion: apiextensions.k8s.io/v1beta1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.2.5
+    gke.io/cluster: gke://sm-demo-forteam/us-west1-b/secondary
+  creationTimestamp: null
+  name: canonicalservices.anthos.cloud.google.com
+spec:
+  group: anthos.cloud.google.com
+  names:
+    kind: CanonicalService
+    listKind: CanonicalServiceList
+    plural: canonicalservices
+    singular: canonicalservice
+  scope: Namespaced
+  validation:
+    openAPIV3Schema:
+      description: CanonicalService is the Schema for the canonicalservices API
+      properties:
+        apiVersion:
+          description: 'APIVersion defines the versioned schema of this representation
+            of an object. Servers should convert recognized schemas to the latest
+            internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+          type: string
+        kind:
+          description: 'Kind is a string value representing the REST resource this
+            object represents. Servers may infer this from the endpoint the client
+            submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+          type: string
+        metadata:
+          type: object
+        spec:
+          description: CanonicalServiceSpec defines the desired state of CanonicalService
+          properties:
+            description:
+              description: Description of the service
+              maxLength: 500
+              minLength: 0
+              type: string
+            displayName:
+              description: Human-friendly name of the service
+              maxLength: 100
+              minLength: 0
+              type: string
+          type: object
+        status:
+          description: CanonicalServiceStatus defines the observed state of CanonicalService
+          properties:
+            inactiveSince:
+              description: The time that the service was set to Inactive (if the service
+                is Active, will be empty)
+              format: date-time
+              type: string
+            resourceTypes:
+              description: Array of the resource types the service is currently found
+                on
+              items:
+                description: Struct representing the types of resource a Canonical
+                  Service has been run on. It includes information about whether the
+                  resource is currently in use by the service, so that we can track
+                  resources that might still have valuable metrics but are not active.
+                properties:
+                  inactiveSince:
+                    format: date-time
+                    type: string
+                  name:
+                    enum:
+                    - Pod
+                    - WorkloadEntry
+                    type: string
+                  state:
+                    description: CanonicalServiceState tells us whether the service
+                      is currently Active (aka there is at least one Pod or WorkloadEntry
+                      running this service) or Inactive.
+                    enum:
+                    - Active
+                    - Inactive
+                    - Error
+                    type: string
+                required:
+                - name
+                - state
+                type: object
+              type: array
+            resourceVersionWhenBecameInactive:
+              description: The resource version of the Canonical Service resource
+                when it was marked Inactive
+              type: string
+            state:
+              description: Current state of the service
+              enum:
+              - Active
+              - Inactive
+              - Error
+              type: string
+          required:
+          - state
+          type: object
+      type: object
+  version: v1beta1
+  versions:
+  - name: v1beta1
+    served: true
+    storage: true
+status:
+  acceptedNames:
+    kind: ""
+    plural: ""
+  conditions: []
+  storedVersions: []
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  annotations:
+    gke.io/cluster: gke://sm-demo-forteam/us-west1-b/secondary
+  name: canonical-service-account
+  namespace: asm-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  annotations:
+    gke.io/cluster: gke://sm-demo-forteam/us-west1-b/secondary
+  name: canonical-service-leader-election-role
+  namespace: asm-system
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - configmaps/status
+  verbs:
+  - get
+  - update
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  annotations:
+    gke.io/cluster: gke://sm-demo-forteam/us-west1-b/secondary
+  creationTimestamp: null
+  name: canonical-service-manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - anthos.cloud.google.com
+  resources:
+  - canonicalservices
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - anthos.cloud.google.com
+  resources:
+  - canonicalservices/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - networking.istio.io
+  resources:
+  - workloadentries
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRole
+metadata:
+  annotations:
+    gke.io/cluster: gke://sm-demo-forteam/us-west1-b/secondary
+  name: canonical-service-metrics-reader
+rules:
+- nonResourceURLs:
+  - /metrics
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  annotations:
+    gke.io/cluster: gke://sm-demo-forteam/us-west1-b/secondary
+  name: canonical-service-leader-election-rolebinding
+  namespace: asm-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: canonical-service-leader-election-role
+subjects:
+- kind: ServiceAccount
+  name: canonical-service-account
+  namespace: asm-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  annotations:
+    gke.io/cluster: gke://sm-demo-forteam/us-west1-b/secondary
+  name: canonical-service-manager-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: canonical-service-manager-role
+subjects:
+- kind: ServiceAccount
+  name: canonical-service-account
+  namespace: asm-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  annotations:
+    gke.io/cluster: gke://sm-demo-forteam/us-west1-b/secondary
+  name: canonical-service-proxy-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: canonical-service-proxy-role
+subjects:
+- kind: ServiceAccount
+  name: canonical-service-account
+  namespace: asm-system
+---
+apiVersion: serviceusage.cnrm.cloud.google.com/v1beta1
+kind: Service
+metadata:
+  annotations:
+    cnrm.cloud.google.com/deletion-policy: abandon
+    cnrm.cloud.google.com/disable-dependent-services: "false"
+    gke.io/cluster: bootstrap://
+  name: anthos.googleapis.com
+  namespace: sm-demo-forteam
+---
+apiVersion: serviceusage.cnrm.cloud.google.com/v1beta1
+kind: Service
+metadata:
+  annotations:
+    cnrm.cloud.google.com/deletion-policy: abandon
+    cnrm.cloud.google.com/disable-dependent-services: "false"
+    gke.io/cluster: bootstrap://
+  name: compute.googleapis.com
+  namespace: sm-demo-forteam
+---
+apiVersion: serviceusage.cnrm.cloud.google.com/v1beta1
+kind: Service
+metadata:
+  annotations:
+    cnrm.cloud.google.com/deletion-policy: abandon
+    cnrm.cloud.google.com/disable-dependent-services: "false"
+    gke.io/cluster: bootstrap://
+  name: container.googleapis.com
+  namespace: sm-demo-forteam
+---
+apiVersion: serviceusage.cnrm.cloud.google.com/v1beta1
+kind: Service
+metadata:
+  annotations:
+    cnrm.cloud.google.com/deletion-policy: abandon
+    cnrm.cloud.google.com/disable-dependent-services: "false"
+    gke.io/cluster: bootstrap://
+  name: iamcredentials.googleapis.com
+  namespace: sm-demo-forteam
+---
+apiVersion: serviceusage.cnrm.cloud.google.com/v1beta1
+kind: Service
+metadata:
+  annotations:
+    cnrm.cloud.google.com/deletion-policy: abandon
+    cnrm.cloud.google.com/disable-dependent-services: "false"
+    gke.io/cluster: bootstrap://
+  name: meshca.googleapis.com
+  namespace: sm-demo-forteam
+---
+apiVersion: serviceusage.cnrm.cloud.google.com/v1beta1
+kind: Service
+metadata:
+  annotations:
+    cnrm.cloud.google.com/deletion-policy: abandon
+    cnrm.cloud.google.com/disable-dependent-services: "false"
+    gke.io/cluster: bootstrap://
+  name: meshconfig.googleapis.com
+  namespace: sm-demo-forteam
+---
+apiVersion: serviceusage.cnrm.cloud.google.com/v1beta1
+kind: Service
+metadata:
+  annotations:
+    cnrm.cloud.google.com/deletion-policy: abandon
+    cnrm.cloud.google.com/disable-dependent-services: "false"
+    gke.io/cluster: bootstrap://
+  name: meshtelemetry.googleapis.com
+  namespace: sm-demo-forteam
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    gke.io/cluster: gke://sm-demo-forteam/us-west1-b/secondary
+  labels:
+    control-plane: controller-manager
+  name: canonical-service-controller-manager-metrics-service
+  namespace: asm-system
+spec:
+  ports:
+  - name: https
+    port: 8443
+    targetPort: https
+  selector:
+    control-plane: controller-manager
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    gke.io/cluster: gke://sm-demo-forteam/us-west1-b/secondary
+  labels:
+    control-plane: controller-manager
+  name: canonical-service-controller-manager
+  namespace: asm-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      control-plane: controller-manager
+  template:
+    metadata:
+      labels:
+        control-plane: controller-manager
+    spec:
+      containers:
+      - args:
+        - --secure-listen-address=0.0.0.0:8443
+        - --upstream=http://127.0.0.1:8080/
+        - --logtostderr=true
+        - --v=10
+        image: gcr.io/kubebuilder/kube-rbac-proxy:v0.5.0
+        name: kube-rbac-proxy
+        ports:
+        - containerPort: 8443
+          name: https
+      - args:
+        - --metrics-addr=127.0.0.1:8080
+        - --enable-leader-election
+        command:
+        - /manager
+        image: gcr.io/gke-release/asm/canonical-service-controller:1.6.11-asm.1
+        name: manager
+        resources:
+          limits:
+            cpu: 100m
+            memory: 100Mi
+          requests:
+            cpu: 100m
+            memory: 20Mi
+      serviceAccountName: canonical-service-account
+      terminationGracePeriodSeconds: 10
+---
+apiVersion: container.cnrm.cloud.google.com/v1beta1
+kind: ContainerCluster
+metadata:
+  annotations:
+    cnrm.cloud.google.com/project-id: sm-demo-forteam
+    gke.io/cluster: bootstrap://
+  labels:
+    mesh_id: proj-891993590564
+  name: secondary
+  namespace: sm-demo-forteam
+spec:
+  addonsConfig:
+    dnsCacheConfig:
+      enabled: false
+    gcePersistentDiskCsiDriverConfig:
+      enabled: false
+    horizontalPodAutoscaling:
+      disabled: false
+    httpLoadBalancing:
+      disabled: false
+    istioConfig:
+      auth: AUTH_MUTUAL_TLS
+      disabled: true
+    networkPolicyConfig:
+      disabled: false
+  clusterAutoscaling:
+    autoscalingProfile: BALANCED
+    enabled: false
+  clusterIpv4Cidr: 10.80.0.0/14
+  databaseEncryption:
+    state: DECRYPTED
+  defaultMaxPodsPerNode: 110
+  enableShieldedNodes: true
+  ipAllocationPolicy:
+    clusterIpv4CidrBlock: 10.80.0.0/14
+    clusterSecondaryRangeName: gke-secondary-pods-83e70a7d
+    servicesIpv4CidrBlock: 10.84.0.0/20
+    servicesSecondaryRangeName: gke-secondary-services-83e70a7d
+  labels:
+    mesh_id: proj-891993590564
+  location: us-west1-b
+  loggingService: logging.googleapis.com/kubernetes
+  maintenancePolicy:
+    dailyMaintenanceWindow:
+      duration: PT4H0M0S
+      startTime: "05:00"
+  masterAuth:
+    clientCertificateConfig:
+      issueClientCertificate: false
+    clusterCaCertificate: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURLekNDQWhPZ0F3SUJBZ0lSQUwwdzIvV3dPSCtQWThsWmV3QXVWaE13RFFZSktvWklodmNOQVFFTEJRQXcKTHpFdE1Dc0dBMVVFQXhNa01HTXpORGhpTUdFdE5UVm1PUzAwWlRaakxXRmlNV0V0WldOa1kyUmxZMk5oTkdSagpNQjRYRFRJeE1ETXhPVEV6TXpBME0xb1hEVEkyTURNeE9ERTBNekEwTTFvd0x6RXRNQ3NHQTFVRUF4TWtNR016Ck5EaGlNR0V0TlRWbU9TMDBaVFpqTFdGaU1XRXRaV05rWTJSbFkyTmhOR1JqTUlJQklqQU5CZ2txaGtpRzl3MEIKQVFFRkFBT0NBUThBTUlJQkNnS0NBUUVBbjdEVVpXWXNmSFRNRkhQVmFhTDJDVm1YRDlIU1hTc3NNQlc4QS9BdApsbWYveXN1TlpMWHpVSmhYNDkvSklHZXI5YjJ6R0lpa0FOTFVHekI4NTl1Um5PNUFwbEhLOWQ4eUc5Qy9zVlJYCkRuMXRGVlFsU3hOOU1Yb2FTbHZCK0VJck9qcU5mK1dMK2Z3VXRORFJReFp2eHJnbXBmOWRGVG53Uis1cytPdnEKSzlXcklhOXhuQjJJSDVBWkkzNmxBZDhtOStDWlpEdnM3czczREdvVzFMajY2OHFDOFdOamovWW50bjcwWko2bApPeGl1RWpOMGF0R0JDbU5tUE05Z1pUMHN0NEU0N2FvTU0rMCtOMFJlMnRCWnVXc0FHS3YvNTlNK3o0Z0lzckNWCjZlRWMyL1oxT1ZpNmpsYU5uVUV4QysraW5Vak9vbWVlZVVUdFNlQjdWbS9mMlFJREFRQUJvMEl3UURBT0JnTlYKSFE4QkFmOEVCQU1DQWdRd0R3WURWUjBUQVFIL0JBVXdBd0VCL3pBZEJnTlZIUTRFRmdRVUViQ2oyeW5TYWZOTwpLSVgyelQzYmRuNjdXTXd3RFFZSktvWklodmNOQVFFTEJRQURnZ0VCQUl0NThpUFFCYTRPVndKdzZYNmxvTFZXCmcrVndORXBJZEc1a3FrWnBWZkpIbEN3TXEyVFFsemY4cjlOM25ISXZUUmFLUndGY3lyWllUWitzL0t1WE9TL2kKWG1YVGlZRjBjT3N6SjN5V0RVdXB5aFpzN3hGMXhrMjFGbXpuOTIyVzNnTTFTbWJIa3dycjBudWRxT0ZLZGlpRwpZdmtiVzFPK0ZwNkpyRFo3RmRUcFIwaWZLOVFSOTI1RTZDTjlqT2xGL1BBcGV0MW5NeUJOcTF3K1NvNm56bmFXCkVKb2N5L2xLMG5QQVB4TjlZczdiZ0hGY1YxMXE2bC9JNENVWENxYUxGamd2djlPamNCbS9HMVVkQjdVbTR2b1oKVkczYjMxTlN2MFAzNjNQZjhCUFYwWTFqZGJmaStqaG00WktlSk12SXVWblRvRU1XWTlTR2J0T1dGd085Y1BRPQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==
+  monitoringService: monitoring.googleapis.com/kubernetes
+  networkPolicy:
+    enabled: true
+    provider: CALICO
+  networkRef:
+    external: projects/sm-demo-forteam/global/networks/default
+  nodeConfig:
+    diskSizeGb: 100
+    diskType: pd-standard
+    imageType: COS
+    machineType: e2-medium
+    metadata:
+      disable-legacy-endpoints: "true"
+    oauthScopes:
+    - https://www.googleapis.com/auth/logging.write
+    - https://www.googleapis.com/auth/monitoring
+    serviceAccountRef:
+      external: tf-gke-secondary-vx3q@sm-demo-forteam.iam.gserviceaccount.com
+    shieldedInstanceConfig:
+      enableIntegrityMonitoring: true
+    workloadMetadataConfig:
+      nodeMetadata: GKE_METADATA_SERVER
+  nodeVersion: 1.18.12-gke.1210
+  releaseChannel:
+    channel: REGULAR
+  subnetworkRef:
+    external: projects/sm-demo-forteam/regions/us-west1/subnetworks/default
+  verticalPodAutoscaling:
+    enabled: false
+  workloadIdentityConfig:
+    identityNamespace: sm-demo-forteam.svc.id.goog
+status:
+  endpoint: 35.247.118.176
+  instanceGroupUrls:
+  - https://www.googleapis.com/compute/beta/projects/sm-demo-forteam/zones/us-west1-b/instanceGroups/gke-secondary-default-pool-52fa91fa-grp
+  - https://www.googleapis.com/compute/beta/projects/sm-demo-forteam/zones/us-west1-b/instanceGroups/gke-secondary-default-node-pool-615f3964-grp
+  labelFingerprint: 4f04c4f6
+  masterVersion: 1.18.12-gke.1210
+  servicesIpv4Cidr: 10.84.0.0/20
+---
+apiVersion: container.cnrm.cloud.google.com/v1beta1
+kind: ContainerNodePool
+metadata:
+  annotations:
+    cnrm.cloud.google.com/project-id: sm-demo-forteam
+    gke.io/cluster: bootstrap://
+  name: default-node-pool
+  namespace: sm-demo-forteam
+spec:
+  clusterRef:
+    external: secondary
+    name: secondary
+  initialNodeCount: 5
+  location: us-west1-b
+  management:
+    autoRepair: true
+    autoUpgrade: true
+  maxPodsPerNode: 110
+  nodeConfig:
+    diskSizeGb: 100
+    diskType: pd-standard
+    imageType: COS
+    labels:
+      cluster_name: secondary
+      node_pool: default-node-pool
+    machineType: e2-standard-4
+    metadata:
+      cluster_name: secondary
+      disable-legacy-endpoints: "true"
+      node_pool: default-node-pool
+    oauthScopes:
+    - https://www.googleapis.com/auth/cloud-platform
+    serviceAccountRef:
+      external: tf-gke-secondary-vx3q@sm-demo-forteam.iam.gserviceaccount.com
+    shieldedInstanceConfig:
+      enableIntegrityMonitoring: true
+    tags:
+    - gke-secondary
+    - gke-secondary-default-node-pool
+    workloadMetadataConfig:
+      nodeMetadata: GKE_METADATA_SERVER
+  nodeCount: 5
+  nodeLocations:
+  - us-west1-b
+  upgradeSettings:
+    maxSurge: 1
+    maxUnavailable: 0
+  version: 1.18.12-gke.1210
+status:
+  instanceGroupUrls:
+  - https://www.googleapis.com/compute/v1/projects/sm-demo-forteam/zones/us-west1-b/instanceGroupManagers/gke-secondary-default-node-pool-615f3964-grp
+---
+apiVersion: container.cnrm.cloud.google.com/v1beta1
+kind: ContainerNodePool
+metadata:
+  annotations:
+    cnrm.cloud.google.com/project-id: sm-demo-forteam
+    gke.io/cluster: bootstrap://
+  name: default-pool
+  namespace: sm-demo-forteam
+spec:
+  clusterRef:
+    external: secondary
+    name: secondary
+  initialNodeCount: 0
+  location: us-west1-b
+  management:
+    autoRepair: true
+    autoUpgrade: true
+  maxPodsPerNode: 110
+  nodeConfig:
+    diskSizeGb: 100
+    diskType: pd-standard
+    imageType: COS
+    machineType: e2-medium
+    metadata:
+      disable-legacy-endpoints: "true"
+    oauthScopes:
+    - https://www.googleapis.com/auth/logging.write
+    - https://www.googleapis.com/auth/monitoring
+    serviceAccountRef:
+      external: tf-gke-secondary-vx3q@sm-demo-forteam.iam.gserviceaccount.com
+    shieldedInstanceConfig:
+      enableIntegrityMonitoring: true
+    workloadMetadataConfig:
+      nodeMetadata: GKE_METADATA_SERVER
+  nodeCount: 0
+  nodeLocations:
+  - us-west1-b
+  upgradeSettings:
+    maxSurge: 1
+    maxUnavailable: 0
+  version: 1.18.12-gke.1210
+status:
+  instanceGroupUrls:
+  - https://www.googleapis.com/compute/v1/projects/sm-demo-forteam/zones/us-west1-b/instanceGroupManagers/gke-secondary-default-pool-52fa91fa-grp
+---
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+metadata:
+  annotations:
+    gke.io/cluster: gke://sm-demo-forteam/us-west1-b/secondary
+  name: default-istio-operator
+spec:
+  components:
+    pilot:
+      k8s:
+        env:
+        - name: SPIFFE_BUNDLE_ENDPOINTS
+          value: sm-demo-forteam.svc.id.goog|https://storage.googleapis.com/mesh-ca-resources/spiffe_bundle.json
+        - name: ENABLE_STACKDRIVER_MONITORING
+          value: "true"
+  hub: gcr.io/gke-release/asm
+  meshConfig:
+    defaultConfig:
+      proxyMetadata:
+        GCP_METADATA: sm-demo-forteam|891993590564|secondary|us-west1-b
+        GKE_CLUSTER_URL: https://container.googleapis.com/v1/projects/sm-demo-forteam/locations/us-west1-b/clusters/secondary
+        TRUST_DOMAIN: sm-demo-forteam.svc.id.goog
+    trustDomainAliases:
+    - sm-demo-forteam.svc.id.goog
+  profile: asm-gcp
+  tag: 1.6.11-asm.1
+  values:
+    global:
+      meshID: proj-891993590564
+      multiCluster:
+        clusterName: sm-demo-forteam/us-west1-b/secondary
+      sds:
+        token:
+          aud: sm-demo-forteam.svc.id.goog
+      trustDomain: sm-demo-forteam.svc.id.goog
